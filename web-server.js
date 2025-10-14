@@ -9,10 +9,16 @@ class WebServer {
     const port = 3000
 
     const clusterDetails = (req, res) => {
-      const swim = cluster.getProtocol();
-
-      const members = [swim.whoami()].concat(_.map(swim.members(), member => member.host));
-      res.status(200).json({members: members});
+      const swarm = cluster.getProtocol();
+      const host = cluster.getHost();
+      
+      // With Hyperswarm, we get members from the cluster module
+      const members = cluster.getMembers();
+      
+      // Include current host in the members list
+      const allMembers = [host].concat(members);
+      
+      res.status(200).json({members: allMembers});
     }
 
     app.use((req, res, next) => {
