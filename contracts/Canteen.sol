@@ -1,4 +1,5 @@
-    pragma solidity ^0.4.15;
+    // SPDX-License-Identifier: MIT
+    pragma solidity ^0.8.0;
 
     contract Canteen {
         struct Member {
@@ -28,34 +29,35 @@
         uint MULT = 100000;
 
         modifier restricted() {
-            if (msg.sender == owner) _;
+            require(msg.sender == owner, "Only owner can call this");
+            _;
         }
 
-        function Canteen() public {
+        constructor() {
             owner = msg.sender;
         }
 
-        function addMember(string host) restricted public {
-            bytes32 hashedHost = keccak256(host);
+        function addMember(string memory host) restricted public {
+            bytes32 hashedHost = keccak256(abi.encodePacked(host));
             require(!memberDetails[hashedHost].active);
 
             members.push(host);
             memberDetails[hashedHost] = Member("", true);
 
-            MemberJoin(host);
+            emit MemberJoin(host);
             setImageForMember(host);
         }
 
-        function removeMember(string host) restricted public {
-            bytes32 hashedHost = keccak256(host);
+        function removeMember(string memory host) restricted public {
+            bytes32 hashedHost = keccak256(abi.encodePacked(host));
             require(memberDetails[hashedHost].active);
 
             string memory affectedImage = memberDetails[hashedHost].imageName;
 
-            imageDetails[keccak256(affectedImage)].deployed -= 1;
+            imageDetails[keccak256(abi.encodePacked(affectedImage))].deployed -= 1;
             memberDetails[hashedHost] = Member("", false);
 
-            MemberLeave(host);
+            emit MemberLeave(host);
 
             // Need to rebalance
             // Eg. (A, 4), (B, 4) are two images. We have 4 members, and we remove 2
@@ -63,8 +65,8 @@
             rebalanceWithUnfortunateImage(affectedImage);
         }
 
-        function addImage(string name, uint replicas) restricted public {
-            bytes32 hashedName = keccak256(name);
+        function addImage(string memory name, uint replicas) restricted public {
+            bytes32 hashedName = keccak256(abi.encodePacked(name));
             require(!imageDetails[hashedName].active);
             require(bytes(name).length > 0);
             require(replicas > 0);
@@ -78,42 +80,42 @@
             rebalanceWithUnfortunateImage(name);
         }
 
-        function removeImage(string name) restricted public {
-            bytes32 hashedName = keccak256(name);
+        function removeImage(string memory name) restricted public {
+            bytes32 hashedName = keccak256(abi.encodePacked(name));
             require(imageDetails[hashedName].active);
 
             imageDetails[hashedName].active = false;
 
             // Reassigns all the affected hosts to new images
             for (uint i = 0; i < members.length; i++) {
-                Member storage member = memberDetails[keccak256(members[i])];
-                if (member.active && keccak256(member.imageName) == hashedName) {
+                Member storage member = memberDetails[keccak256(abi.encodePacked(members[i]))];
+                if (member.active && keccak256(abi.encodePacked(member.imageName)) == hashedName) {
                     member.imageName = "";
                     setImageForMember(members[i]);
                 }
             }
         }
 
-        function addPortForImage(string name, uint from, uint to) restricted public {
-            exposedPortsForImages[keccak256(name)].push([from, to]);
+        function addPortForImage(string memory name, uint from, uint to) restricted public {
+            exposedPortsForImages[keccak256(abi.encodePacked(name))].push([from, to]);
         }
 
-         function getPortsForImage(string name) restricted public view returns (uint[2][]) {
-            return exposedPortsForImages[keccak256(name)];
+         function getPortsForImage(string memory name) restricted public view returns (uint[2][] memory) {
+            return exposedPortsForImages[keccak256(abi.encodePacked(name))];
         }
 
-        function getMemberDetails(string host) public constant returns (string, bool) {
-            Member storage details = memberDetails[keccak256(host)];
+        function getMemberDetails(string memory host) public view returns (string memory, bool) {
+            Member storage details = memberDetails[keccak256(abi.encodePacked(host))];
             return (details.imageName, details.active);
         }
 
-        function getImageDetails(string name) public constant returns (uint, uint, bool) {
-            Image storage details = imageDetails[keccak256(name)];
+        function getImageDetails(string memory name) public view returns (uint, uint, bool) {
+            Image storage details = imageDetails[keccak256(abi.encodePacked(name))];
             return (details.replicas, details.deployed, details.active);
         }
 
-        function rebalanceWithUnfortunateImage(string newImageName) private {
-            Image storage newImage = imageDetails[keccak256(newImageName)];
+        function rebalanceWithUnfortunateImage(string memory newImageName) private {
+            Image storage newImage = imageDetails[keccak256(abi.encodePacked(newImageName))];
             uint currentRatio = 0;
             uint i;
             Member storage member;
@@ -122,13 +124,13 @@
                 if (newImage.deployed >= newImage.replicas)
                     break;
 
-                member = memberDetails[keccak256(members[i])];
+                member = memberDetails[keccak256(abi.encodePacked(members[i]))];
                 // Looking for empty hosts and filling them up
-                if (member.active && keccak256(member.imageName) == keccak256("")) {
+                if (member.active && keccak256(abi.encodePacked(member.imageName)) == keccak256(abi.encodePacked(""))) {
                     member.imageName = newImageName;
                     newImage.deployed += 1;
                     currentRatio += (MULT / newImage.replicas);
-                    MemberImageUpdate(members[i], newImageName);
+                    emit MemberImageUpdate(members[i], newImageName);
                 }
             }
 
@@ -136,12 +138,12 @@
                 if (newImage.deployed >= newImage.replicas)
                     break;
 
-                member = memberDetails[keccak256(members[i])];
+                member = memberDetails[keccak256(abi.encodePacked(members[i]))];
                 // Now we are processing those hosts which already have images on them
-                if (member.active && keccak256(member.imageName) != keccak256("")) {
+                if (member.active && keccak256(abi.encodePacked(member.imageName)) != keccak256(abi.encodePacked(""))) {
                     // Only check if the machine has some other host running
-                    if (keccak256(member.imageName) != keccak256(newImageName)) {
-                        Image storage image = imageDetails[keccak256(member.imageName)];
+                    if (keccak256(abi.encodePacked(member.imageName)) != keccak256(abi.encodePacked(newImageName))) {
+                        Image storage image = imageDetails[keccak256(abi.encodePacked(member.imageName))];
                         uint ratio = (image.deployed * MULT) / image.replicas;
                         // if (ratio < currentRatio + (MULT / newImage.replicas)) {
                         if (ratio > currentRatio) {
@@ -149,38 +151,38 @@
                             newImage.deployed += 1;
                             image.deployed -= 1;
                             currentRatio += (MULT / newImage.replicas);
-                            MemberImageUpdate(members[i], newImageName);
+                            emit MemberImageUpdate(members[i], newImageName);
                         }
                     }
                 }
             }
         }
 
-        function setImageForMember(string host) private {
+        function setImageForMember(string memory host) private {
             string memory image = getNextImageToUse();
-            bytes32 hashedHost = keccak256(host);
-            bytes32 hashedImage = keccak256(image);
-            if (hashedImage == keccak256("")) {
+            bytes32 hashedHost = keccak256(abi.encodePacked(host));
+            bytes32 hashedImage = keccak256(abi.encodePacked(image));
+            if (hashedImage == keccak256(abi.encodePacked(""))) {
                 return;
             }
 
             // Host currently has no image, and image hasn't reached its limit yet.
-            require(keccak256(memberDetails[hashedHost].imageName) == keccak256(""));
+            require(keccak256(abi.encodePacked(memberDetails[hashedHost].imageName)) == keccak256(abi.encodePacked("")));
             require(imageDetails[hashedImage].deployed < imageDetails[hashedImage].replicas);
 
             memberDetails[hashedHost] = Member(image, true);
             imageDetails[hashedImage].deployed += 1;
-            MemberImageUpdate(host, image);
+            emit MemberImageUpdate(host, image);
         }
 
         // Selects image with lowest usage, scales equal usage of all replicas,
         // with respect to the ratio of the replicas required.
-        function getNextImageToUse() private view returns (string) {
+        function getNextImageToUse() private view returns (string memory) {
             string memory bestImage = "";
             uint lowestUsage = MULT;
 
             for (uint i = 0; i < images.length; i++) {
-                bytes32 hash = keccak256(images[i]);
+                bytes32 hash = keccak256(abi.encodePacked(images[i]));
                 Image storage image = imageDetails[hash];
 
                 if (image.deployed >= image.replicas)

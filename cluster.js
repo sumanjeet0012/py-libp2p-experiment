@@ -1,35 +1,72 @@
-import Swim from 'swim'
+import Hyperswarm from 'hyperswarm'
 import _ from 'lodash'
+import crypto from 'crypto'
 
 class CanteenCluster {
+  constructor() {
+    this.members = new Set()
+    this.swarm = null
+    this.host = null
+  }
+
   getHost() {
     return this.host
   }
 
   getProtocol() {
-    return this.swim;
+    return this.swarm
+  }
+
+  getMembers() {
+    return Array.from(this.members)
   }
 
   start(port, nodes) {
     this.host = `127.0.0.1:${port}`
-    const swim = new Swim({local: {host: this.host}})
-
+    
+    // Create hyperswarm instance
+    const swarm = new Hyperswarm()
+    
+    // Create a topic for the canteen cluster
+    const topic = crypto.createHash('sha256')
+      .update('canteen-cluster')
+      .digest()
+    
+    console.log(`Starting Hyperswarm on port ${port}...`)
     console.log(`Joining ${nodes.length} specified bootstrap node(s).`)
-
-    swim.bootstrap(nodes, err => {
-      if (err) {
-        console.error(err)
-        return
+    
+    // Join the cluster topic
+    const discovery = swarm.join(topic, {
+      server: true,  // Accept connections
+      client: true   // Make connections
+    })
+    
+    // Wait for the topic to be fully announced
+    discovery.flushed().then(() => {
+      console.log(`Cluster topic announced`)
+    })
+    
+    // Handle new peer connections
+    swarm.on('connection', (socket, peerInfo) => {
+      const peerId = peerInfo.publicKey.toString('hex').slice(0, 8)
+      
+      if (!this.members.has(peerId)) {
+        this.members.add(peerId)
+        console.log(`Cluster members: ${this.members.size > 0 ? '[' + Array.from(this.members).join(', ') + ']' : 'None.'}`)
       }
-
-      console.log(`Cluster members: ${swim.members().length && ('[' + _.map(swim.members(), member => member.host).join(', ') + ']') || 'None.'}`)
-
-      swim.on(Swim.EventType.Change, update => {
-        console.log(`Cluster members: ${swim.members().length && ('[' + _.map(swim.members(), member => member.host).join(', ') + ']') || 'None.'}`)
+      
+      socket.on('error', () => {
+        this.members.delete(peerId)
+        console.log(`Cluster members: ${this.members.size > 0 ? '[' + Array.from(this.members).join(', ') + ']' : 'None.'}`)
+      })
+      
+      socket.on('close', () => {
+        this.members.delete(peerId)
+        console.log(`Cluster members: ${this.members.size > 0 ? '[' + Array.from(this.members).join(', ') + ']' : 'None.'}`)
       })
     })
-
-    this.swim = swim
+    
+    this.swarm = swarm
   }
 }
 
