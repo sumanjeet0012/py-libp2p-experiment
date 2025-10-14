@@ -7,7 +7,20 @@ import Cluster from './cluster'
 class CanteenScheduler {
   async start(provider, contractAddress, privateKey, dockerPath = '/var/run/docker.sock') {
     const web3 = new Web3(provider)
-    const account = web3.eth.accounts.wallet.add(privateKey && web3.eth.accounts.privateKeyToAccount(privateKey) || web3.eth.accounts.create())
+    
+    // Get account - either from Ganache or create new one
+    let account
+    if (privateKey) {
+      account = web3.eth.accounts.wallet.add(web3.eth.accounts.privateKeyToAccount(privateKey))
+    } else {
+      // Get first account from Ganache (pre-funded with 100 ETH)
+      const accounts = await web3.eth.getAccounts()
+      if (accounts.length === 0) {
+        throw new Error('No accounts available in Ganache')
+      }
+      account = { address: accounts[0] }
+      console.log(`Using Ganache account: ${account.address}`)
+    }
 
     const contract = new web3.eth.Contract(Canteen.abi, contractAddress, {from: account.address})
 

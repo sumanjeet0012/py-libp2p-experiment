@@ -2,7 +2,7 @@ module.exports = {
   networks: {
     development: {
       host: "localhost",
-      port: 8545,
+      port: 7545,
       gas: 4600000,
       network_id: "*" // Match any network id
     },
@@ -28,6 +28,11 @@ module.exports = {
       },
       gas: 4000000,
       gasPrice: 26000000000
+    }
+  },
+  compilers: {
+    solc: {
+      version: "0.8.19"
     }
   }
 };
