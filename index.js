@@ -1,26 +1,24 @@
-import _ from 'lodash'
 import cluster from './cluster'
 import scheduler from './scheduler'
 import Web3 from 'web3'
-import web from './web-server';
+import web from './web-server'
+import config from './config'
 
-const args = _.reduce(process.argv.slice(2), (args, arg) => {
-  const [k, v = true] = arg.split('=')
-  args[k] = v
-  return args
-}, {})
+// Print configuration
+config.print()
 
-const port = args.port || 5000
-const webPort = args.webport || 3000
-const nodes = args.nodes && args.nodes.split(',') || []
+// Start cluster with configuration
+cluster.start(config.getP2PPort(), config.getBootstrapNodes())
 
-cluster.start(port, nodes)
+// Start scheduler with configuration
+scheduler.start(
+  new Web3.providers.HttpProvider(config.getBlockchainProvider()),
+  config.getContractAddress(),
+  config.getPrivateKey()
+)
 
-scheduler.start(new Web3.providers.HttpProvider('http://localhost:7545'),
-  '0x8fC4C65e7410a841fdE20f67679C76eFf1Ab8939', // Deployed Canteen contract address
-  null) // Use null to let Web3 get an account from Ganache
-
-web.start(webPort);
+// Start web server with configuration
+web.start(config.getWebApiPort());
 
 process.stdin.resume();
 

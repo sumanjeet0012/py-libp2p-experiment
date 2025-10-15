@@ -3,3 +3,12 @@ package-lock.json
 node_modules/
 .idea/
 npm-debug.log
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+/tmp/*.log

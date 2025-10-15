@@ -3,9 +3,10 @@ import Canteen from './build/contracts/Canteen.json'
 import Docker from 'dockerode'
 import _ from 'lodash'
 import Cluster from './cluster'
+import config from './config'
 
 class CanteenScheduler {
-  async start(provider, contractAddress, privateKey, dockerPath = '/var/run/docker.sock') {
+  async start(provider, contractAddress, privateKey) {
     const web3 = new Web3(provider)
     
     // Get account - either from Ganache or create new one
@@ -24,7 +25,8 @@ class CanteenScheduler {
 
     const contract = new web3.eth.Contract(Canteen.abi, contractAddress, {from: account.address})
 
-    const docker = new Docker({socketPath: dockerPath})
+    // Use Docker socket from config
+    const docker = new Docker({socketPath: config.getDockerSocket()})
 
     this.docker = docker
     this.contract = contract
@@ -33,7 +35,9 @@ class CanteenScheduler {
 
     try {
       await this.registerNode()
-      setInterval(async () => await this.loop(), 1000)
+      // Use poll interval from config
+      const pollInterval = config.getSchedulerPollInterval()
+      setInterval(async () => await this.loop(), pollInterval)
     } catch (error) {
       console.error(error)
     }
@@ -91,6 +95,16 @@ class CanteenScheduler {
     if (this.scheduledImage.length === 0) return
 
     this.docker.pull(scheduledImage, (err, stream) => {
+      if (err) {
+        console.error('Error pulling image:', err.message)
+        return
+      }
+      
+      if (!stream) {
+        console.error('No stream returned from docker.pull')
+        return
+      }
+
       console.log('')
 
       this.docker.modem.followProgress(stream, finished.bind(this), progress)
@@ -175,11 +189,19 @@ class CanteenScheduler {
     console.log('Scheduler stopping; stopping and removing binded container.')
 
     if (this.container) {
-      await this.container.stop()
-      await this.container.remove()
+      try {
+        await this.container.stop()
+        await this.container.remove()
+        console.log('Container stopped and removed successfully.')
+      } catch (error) {
+        // Container might already be stopped or removed
+        console.log('Container cleanup skipped (already stopped/removed).')
+      }
 
       this.scheduledImage = ''
       this.container = null
+    } else {
+      console.log('No container to cleanup.')
     }
   }
 }

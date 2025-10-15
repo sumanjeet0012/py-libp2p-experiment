@@ -95,9 +95,15 @@ class App extends Component {
   constructor(props) {
     super(props)
 
+    // Get configuration from environment variables
+    const blockchainProvider = process.env.REACT_APP_BLOCKCHAIN_PROVIDER || 'http://localhost:7545'
+    const contractAddress = process.env.REACT_APP_CONTRACT_ADDRESS || '0x8fC4C65e7410a841fdE20f67679C76eFf1Ab8939'
+    const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:3000'
+
     this.state = {
       status: 'connecting...',
-      contract: '0x345ca3e014aaf5dca488057592ee47305d9b3e10',
+      contract: contractAddress,
+      apiUrl: apiUrl,
       images: [],
       nodes: [],
       image: {
@@ -111,8 +117,8 @@ class App extends Component {
       }
     }
 
-    this.web3 = new Web3(new Web3.providers.HttpProvider('http://localhost:7545'))
-    this.contract = new this.web3.eth.Contract(Canteen.abi, this.state.contract)
+    this.web3 = new Web3(new Web3.providers.HttpProvider(blockchainProvider))
+    this.contract = new this.web3.eth.Contract(Canteen.abi, contractAddress)
 
     this.width = 960
     this.height = 500
@@ -128,7 +134,7 @@ class App extends Component {
   async componentDidMount() {
     // Get cluster data and setup visualization.
 
-    const data = await (await fetch('http://localhost:3000/cluster')).json()
+    const data = await (await fetch(`${this.state.apiUrl}/cluster`)).json()
 
     this.graph = d3.select(this.refs.graph)
 
