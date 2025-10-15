@@ -1,4 +1,4 @@
-import React, { Component, ReactDOM } from 'react'
+import React, { Component } from 'react'
 import './App.css'
 import Web3 from 'web3'
 import styled from 'styled-components'
@@ -111,7 +111,7 @@ class App extends Component {
       }
     }
 
-    this.web3 = new Web3(new Web3.providers.HttpProvider('http://localhost:8545'))
+    this.web3 = new Web3(new Web3.providers.HttpProvider('http://localhost:7545'))
     this.contract = new this.web3.eth.Contract(Canteen.abi, this.state.contract)
 
     this.width = 960
@@ -161,7 +161,7 @@ class App extends Component {
 
     this.force.nodes(nodes).force('link').links(links)
 
-    const link = this.graph.selectAll('.link')
+    this.graph.selectAll('.link')
       .data(links)
       .enter()
       .append('line')
@@ -237,7 +237,7 @@ class App extends Component {
 
   async addImage() {
     const imageName = this.state.image.add.imageName
-    const reps = parseInt(this.state.image.add.num)
+    const reps = parseInt(this.state.image.add.num, 10)
 
     const account = (await this.web3.eth.getAccounts())[0]
     await this.contract.methods.addImage(imageName, reps).send({from: account, gas: 5000000})
@@ -251,7 +251,7 @@ class App extends Component {
   }
 
   render() {
-    const {status, images, contract, nodes} = this.state
+    const {images, contract, nodes} = this.state
 
     return (
       <Page>
@@ -261,7 +261,7 @@ class App extends Component {
 
           <StatusContainer>
             <StatusColumn style={{flex: 2}}><Label>contract:</Label> <code>{contract}</code></StatusColumn>
-            <StatusColumn style={{flex: 2}}><Label>deployed:</Label> {images.length == 0 && 'N/A' || images.join(', ')}
+            <StatusColumn style={{flex: 2}}><Label>deployed:</Label> {(images.length === 0 && 'N/A') || images.join(', ')}
             </StatusColumn>
             <StatusColumn><Label>num servers:</Label> {nodes.length}</StatusColumn>
           </StatusContainer>
