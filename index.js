@@ -11,15 +11,16 @@ const args = _.reduce(process.argv.slice(2), (args, arg) => {
 }, {})
 
 const port = args.port || 5000
+const webPort = args.webport || 3000
 const nodes = args.nodes && args.nodes.split(',') || []
 
 cluster.start(port, nodes)
 
 scheduler.start(new Web3.providers.HttpProvider('http://localhost:7545'),
-  '0x81b85E74bDC1CD6Ef96479A1970fcB59Bb87A963', // Deployed Canteen contract address
+  '0x8fC4C65e7410a841fdE20f67679C76eFf1Ab8939', // Deployed Canteen contract address
   null) // Use null to let Web3 get an account from Ganache
 
-web.start();
+web.start(webPort);
 
 process.stdin.resume();
 

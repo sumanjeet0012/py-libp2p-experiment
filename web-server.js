@@ -4,9 +4,8 @@ import _ from 'lodash';
 import http from 'http';
 
 class WebServer {
-  start() {
+  start(port = 3000) {
     const app = express()
-    const port = 3000
 
     const clusterDetails = (req, res) => {
       const swarm = cluster.getProtocol();
@@ -35,7 +34,7 @@ class WebServer {
       server.on('error', err => {
         console.error(err);
       });
-      server.listen(3000);
+      server.listen(port);
       console.log(`Cluster health check web service is listening on port ${port}`)
     } catch (error) {
       console.log(error.message);
