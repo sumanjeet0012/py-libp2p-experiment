@@ -58,11 +58,16 @@ class CanteenNode:
                 cluster=self.cluster,
                 contract_address=self.config.contract_address,
                 provider_url=self.config.blockchain_provider,
-                private_key=self.config.private_key
+                private_key=self.config.private_key,
+                node_port=self.config.p2p_port
             )
             
             # Initialize scheduler
             await self.scheduler.initialize()
+            
+            # Set scheduler reference in cluster (for P2P deployment protocol)
+            self.cluster.set_scheduler(self.scheduler)
+            logger.info("✓ Cluster now has scheduler reference for P2P deployments")
             
             # Start web server (in separate thread) - after scheduler is ready
             start_web_server(self.cluster, self.scheduler, self.config.web_api_port)

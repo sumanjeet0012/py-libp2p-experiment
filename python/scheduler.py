@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class CanteenScheduler:
     """Manages container scheduling based on smart contract state."""
     
-    def __init__(self, cluster, contract_address: str, provider_url: str, private_key: str):
+    def __init__(self, cluster, contract_address: str, provider_url: str, private_key: str, node_port: int = 5000):
         """Initialize scheduler.
         
         Args:
@@ -20,11 +20,13 @@ class CanteenScheduler:
             contract_address: Ethereum contract address
             provider_url: Blockchain provider URL
             private_key: Private key for transactions (empty to use Ganache account)
+            node_port: P2P port of this node (used for container port calculation)
         """
         self.cluster = cluster
         self.contract_address = contract_address
         self.provider_url = provider_url
         self.private_key = private_key
+        self.node_port = node_port
         
         # Will be initialized in start()
         self.w3 = None
@@ -200,8 +202,11 @@ class CanteenScheduler:
                 logger.info("Stopping old container...")
                 await trio.to_thread.run_sync(self._stop_container)
             
-            # Determine port
-            port = 8000 if "hello-world" in image_name else 8080
+            # Calculate unique port based on node offset
+            # Node 0 (5000) -> 8080, Node 1 (5001) -> 8081, etc.
+            node_offset = self.node_port - 5000
+            base_port = 8000 if "hello-world" in image_name else 8080
+            port = base_port + node_offset
             
             # Create and start new container
             logger.info(f"Starting new container (port {port})...")
@@ -209,7 +214,7 @@ class CanteenScheduler:
                 lambda: self.docker_client.containers.run(
                     image_name,
                     detach=True,
-                    ports={f'{port}/tcp': port},
+                    ports={f'{base_port}/tcp': port},  # Map container's base_port to host's unique port
                     remove=False
                 )
             )
