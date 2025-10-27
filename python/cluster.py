@@ -26,14 +26,51 @@ class CanteenCluster:
         self.connected_peers = set()
         self.peer_id = None
         self.ready_event = trio.Event()  # Signal when cluster is ready
+        self.nursery = None  # Will hold the nursery for spawning tasks
         
-    def _on_peer_discovered(self, peer_info: PeerInfo):
+    async def _on_peer_discovered(self, peer_info: PeerInfo):
         """Callback when a peer is discovered via mDNS."""
         peer_id = str(peer_info.peer_id)
-        if peer_id != str(self.peer_id) and peer_id not in self.connected_peers:
+        
+        # Skip if it's ourselves
+        if peer_id == str(self.peer_id):
+            return
+        
+        # Add to discovered set
+        if peer_id not in self.connected_peers:
             self.connected_peers.add(peer_id)
             logger.info(f"✓ Discovered peer via mDNS: {peer_id}")
+            
+            # Attempt to connect to the peer using the nursery
+            if self.nursery:
+                self.nursery.start_soon(self._connect_to_peer, peer_info)
+    
+    async def _connect_to_peer(self, peer_info: PeerInfo):
+        """Connect to a discovered peer."""
+        peer_id = str(peer_info.peer_id)
+        try:
+            logger.info(f"Attempting to connect to {peer_id}...")
+            await self.host.connect(peer_info)
+            logger.info(f"✓ Successfully connected to peer: {peer_id}")
+        except Exception as e:
+            logger.debug(f"Could not connect to {peer_id}: {e}")
+    
+    def get_connected_peers(self) -> List[str]:
+        """Get actually connected peers from the swarm."""
+        if not self.host:
+            return []
         
+        # Get peers from the swarm's network (actual connections)
+        connected = []
+        try:
+            peers = self.host.get_network().connections
+            for peer_id in peers.keys():
+                connected.append(str(peer_id))
+        except Exception as e:
+            logger.debug(f"Error getting connected peers: {e}")
+        
+        return connected
+    
     async def start(self):
         """Start the cluster node (must be called inside a nursery)."""
         logger.info(f"Starting cluster node on port {self.port}...")
@@ -62,16 +99,21 @@ class CanteenCluster:
             self.ready_event.set()
             logger.info("✓ Cluster ready event set - scheduler can now initialize")
             
-            # Keep running until cancelled
-            await trio.sleep_forever()
+            # Create a nursery for peer connections and keep running
+            async with trio.open_nursery() as nursery:
+                self.nursery = nursery
+                # Keep running until cancelled
+                await trio.sleep_forever()
     
     def get_host(self) -> str:
         """Get host identifier (peer ID)."""
         return str(self.peer_id) if self.peer_id else "unknown"
     
     def get_members(self) -> List[str]:
-        """Get list of connected peer IDs."""
-        return list(self.connected_peers)
+        """Get list of connected peer IDs (live connections only)."""
+        # Return actual connected peers from swarm, not just discovered ones
+        return self.get_connected_peers()
+
     
     async def cleanup(self):
         """Cleanup cluster resources."""
