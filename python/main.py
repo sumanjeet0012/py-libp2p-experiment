@@ -61,12 +61,12 @@ class CanteenNode:
                 private_key=self.config.private_key
             )
             
-            # Start web server (in separate thread)
-            start_web_server(self.cluster, self.config.web_api_port)
-            logger.info("")
-            
             # Initialize scheduler
             await self.scheduler.initialize()
+            
+            # Start web server (in separate thread) - after scheduler is ready
+            start_web_server(self.cluster, self.scheduler, self.config.web_api_port)
+            logger.info("")
             
             logger.info("")
             logger.info("=" * 50)

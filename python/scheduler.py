@@ -116,6 +116,40 @@ class CanteenScheduler:
                 logger.error(f"Failed to register node: {e}")
                 raise
     
+    def get_contract_members(self):
+        """Get list of all registered members from the smart contract.
+        
+        Returns:
+            List of member peer IDs (host identifiers)
+        """
+        try:
+            members = []
+            index = 0
+            
+            # Iterate through members array in contract
+            while True:
+                try:
+                    member_host = self.contract.functions.members(index).call()
+                    if not member_host:
+                        break
+                    
+                    # Check if member is active
+                    details = self.contract.functions.getMemberDetails(member_host).call()
+                    is_active = details[1]  # active boolean from Member struct
+                    
+                    if is_active:
+                        members.append(member_host)
+                    
+                    index += 1
+                except Exception:
+                    # End of array or error accessing index
+                    break
+            
+            return members
+        except Exception as e:
+            logger.error(f"Error getting contract members: {e}")
+            return []
+    
     async def poll_loop(self, interval: float):
         """Poll contract for image assignment and manage containers.
         
@@ -214,7 +248,62 @@ class CanteenScheduler:
         else:
             logger.info("No container to clean up")
     
+    async def unregister_node(self):
+        """Unregister this node from the smart contract."""
+        host_id = self.cluster.get_host()
+        logger.info(f"Unregistering node from contract: {host_id}")
+        
+        try:
+            # Define blocking function to check if registered and unregister
+            def _unregister():
+                # First check if we're actually registered
+                member_details = self.contract.functions.getMemberDetails(host_id).call()
+                image_name = member_details[0]  # First element is 'imageName' string
+                is_active = member_details[1]  # Second element is 'active' boolean
+                
+                logger.info(f"Contract state - imageName: '{image_name}', active: {is_active}")
+                
+                if not is_active:
+                    logger.info("Node not registered in contract, skipping unregistration")
+                    return None, None
+                
+                # Proceed with unregistration (contract now handles empty images properly)
+                if image_name:
+                    logger.info(f"Node has image '{image_name}', unregistering...")
+                else:
+                    logger.info("Node has no image assigned, unregistering...")
+                
+                tx_hash = self.contract.functions.removeMember(host_id).transact({
+                    'from': self.account,
+                    'gas': 3000000
+                })
+                receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+                return tx_hash, receipt
+            
+            # Run in thread
+            result = await trio.to_thread.run_sync(_unregister)
+            
+            if result[0] is None:
+                # Not registered or no image, already logged
+                return
+            
+            tx_hash, receipt = result
+            
+            if receipt['status'] == 1:
+                logger.info(f"✓ Node unregistered successfully")
+                logger.info(f"  Transaction: {tx_hash.hex()}")
+            else:
+                logger.warning(f"Node unregistration transaction failed")
+                
+        except Exception as e:
+            logger.error(f"Failed to unregister node: {e}")
+    
     async def cleanup(self):
         """Cleanup scheduler resources."""
         logger.info("Cleaning up scheduler...")
+        
+        # Stop any running containers
         await self.cleanup_container()
+        
+        # Unregister from contract
+        await self.unregister_node()

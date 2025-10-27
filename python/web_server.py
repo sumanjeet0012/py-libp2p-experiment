@@ -6,11 +6,12 @@ from flask import Flask, jsonify
 logger = logging.getLogger(__name__)
 
 
-def start_web_server(cluster, port: int):
+def start_web_server(cluster, scheduler, port: int):
     """Start Flask web server for health checks.
     
     Args:
         cluster: CanteenCluster instance
+        scheduler: CanteenScheduler instance (for contract access)
         port: Port to listen on
     """
     app = Flask(__name__)
@@ -22,19 +23,41 @@ def start_web_server(cluster, port: int):
     @app.route('/')
     @app.route('/cluster')
     def cluster_info():
-        """Get cluster information."""
-        host = cluster.get_host()
-        members = cluster.get_members()
-        
-        # Combine host and members
-        all_members = [host] + members
-        
-        return jsonify({
-            'members': all_members,
-            'self': host,
-            'peers': members,
-            'peer_count': len(members)
-        })
+        """Get cluster information from smart contract (single source of truth)."""
+        try:
+            # Get self
+            host = cluster.get_host()
+            
+            # Get all members from contract (single source of truth)
+            contract_members = scheduler.get_contract_members()
+            
+            # Get P2P connected peers (for connection status)
+            connected_peers = cluster.get_connected_peers()
+            
+            # Build member details with connection status
+            member_details = []
+            for member_id in contract_members:
+                member_details.append({
+                    'peer_id': member_id,
+                    'connected': member_id in connected_peers or member_id == host,
+                    'is_self': member_id == host
+                })
+            
+            return jsonify({
+                'members': contract_members,  # All registered members from contract
+                'member_details': member_details,  # With connection status
+                'self': host,
+                'connected_peers': connected_peers,  # Actually connected via P2P
+                'total_members': len(contract_members),
+                'connected_count': len(connected_peers)
+            })
+        except Exception as e:
+            logger.error(f"Error getting cluster info: {e}")
+            return jsonify({
+                'error': str(e),
+                'members': [],
+                'self': cluster.get_host()
+            }), 500
     
     @app.route('/health')
     def health():
