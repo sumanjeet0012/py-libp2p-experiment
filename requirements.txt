@@ -1,0 +1,8 @@
+# Install libp2p first with its dependencies
+libp2p==0.3.0
+
+# Then install web3 with compatible protobuf
+web3
+docker==7.0.0
+flask==3.0.0
+python-dotenv==1.0.0
