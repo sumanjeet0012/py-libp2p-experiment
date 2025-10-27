@@ -54,15 +54,18 @@
 
             string memory affectedImage = memberDetails[hashedHost].imageName;
 
-            imageDetails[keccak256(abi.encodePacked(affectedImage))].deployed -= 1;
+            if (keccak256(abi.encodePacked(affectedImage)) != keccak256(abi.encodePacked(""))) {
+                imageDetails[keccak256(abi.encodePacked(affectedImage))].deployed -= 1;
+                
+                // Need to rebalance
+                // Eg. (A, 4), (B, 4) are two images. We have 4 members, and we remove 2
+                // We now have A A null null -> We would need A B null null
+                rebalanceWithUnfortunateImage(affectedImage);
+            }
+            
             memberDetails[hashedHost] = Member("", false);
 
             emit MemberLeave(host);
-
-            // Need to rebalance
-            // Eg. (A, 4), (B, 4) are two images. We have 4 members, and we remove 2
-            // We now have A A null null -> We would need A B null null
-            rebalanceWithUnfortunateImage(affectedImage);
         }
 
         function addImage(string memory name, uint replicas) restricted public {
