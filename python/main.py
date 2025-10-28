@@ -3,6 +3,7 @@
 import logging
 import signal
 import sys
+import argparse
 import trio
 
 from config import Config
@@ -59,6 +60,7 @@ class CanteenNode:
                 contract_address=self.config.contract_address,
                 provider_url=self.config.blockchain_provider,
                 private_key=self.config.private_key,
+                memory_mb=self.config.memory_mb,
                 node_port=self.config.p2p_port
             )
             
@@ -140,6 +142,19 @@ async def main():
 
 
 if __name__ == "__main__":
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(description='Canteen Python Node with FHE')
+    parser.add_argument('--memory', type=int, default=4,
+                        help='Available memory in GB (default: 4)')
+    parser.add_argument('--port', type=int, default=5000,
+                        help='P2P port number (default: 5000)')
+    args = parser.parse_args()
+    
+    # Override config with command-line args (convert GB to MB)
+    import os
+    os.environ['MEMORY_MB'] = str(args.memory * 1024)
+    os.environ['P2P_PORT'] = str(args.port)
+    
     try:
         trio.run(main)
     except KeyboardInterrupt:

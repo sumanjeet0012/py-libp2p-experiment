@@ -12,8 +12,11 @@ class Config:
     def __init__(self):
         """Initialize configuration."""
         self.blockchain_provider = os.getenv('BLOCKCHAIN_PROVIDER', 'http://localhost:7545')
-        self.contract_address = os.getenv('CONTRACT_ADDRESS', '0x94b304c25CC9Ac21Fd6aa210eBE45c86846a3cc5')
+        self.contract_address = os.getenv('CONTRACT_ADDRESS', '0xF3C0eb6bfc9faa44014975baA2Bf7Dc143D90c2B')
         self.private_key = os.getenv('PRIVATE_KEY', '')
+        
+        # FHE configuration
+        self.memory_mb = int(os.getenv('MEMORY_MB', '4096'))  # Default 4GB
         
         # Network configuration
         self.p2p_port = int(os.getenv('P2P_PORT', '5000'))
@@ -39,6 +42,7 @@ class Config:
         print(f'Blockchain Provider: {self.blockchain_provider}')
         print(f'Contract Address: {self.contract_address}')
         print(f'Private Key: {"***HIDDEN***" if self.private_key else "Auto (Ganache)"}')
+        print(f'Available Memory: {self.memory_mb / 1024:.1f} GB ({self.memory_mb} MB)')
         print(f'P2P Port: {self.p2p_port}')
         print(f'Web API Port: {self.web_api_port}')
         print(f'mDNS Service Name: {self.mdns_service_name}')

@@ -5,6 +5,7 @@ from typing import Optional
 from web3 import Web3
 import docker
 import trio
+from fhe_helper import FHEHelper
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +13,8 @@ logger = logging.getLogger(__name__)
 class CanteenScheduler:
     """Manages container scheduling based on smart contract state."""
     
-    def __init__(self, cluster, contract_address: str, provider_url: str, private_key: str, node_port: int = 5000):
+    def __init__(self, cluster, contract_address: str, provider_url: str, private_key: str, 
+                 memory_mb: int = 4096, node_port: int = 5000):
         """Initialize scheduler.
         
         Args:
@@ -20,12 +22,14 @@ class CanteenScheduler:
             contract_address: Ethereum contract address
             provider_url: Blockchain provider URL
             private_key: Private key for transactions (empty to use Ganache account)
+            memory_mb: Available memory in MB for FHE encryption
             node_port: P2P port of this node (used for container port calculation)
         """
         self.cluster = cluster
         self.contract_address = contract_address
         self.provider_url = provider_url
         self.private_key = private_key
+        self.memory_mb = memory_mb
         self.node_port = node_port
         
         # Will be initialized in start()
@@ -33,6 +37,7 @@ class CanteenScheduler:
         self.contract = None
         self.account = None
         self.docker_client = None
+        self.fhe_helper = None  # FHE helper for encryption
         
         # Container state
         self.current_container = None
@@ -41,6 +46,11 @@ class CanteenScheduler:
     async def initialize(self):
         """Initialize the scheduler components."""
         logger.info("Initializing scheduler...")
+        
+        # Initialize FHE helper
+        logger.info("Initializing FHE helper (this may take a moment)...")
+        self.fhe_helper = FHEHelper()
+        logger.info("✓ FHE helper initialized")
         
         # Initialize Web3
         self.w3 = Web3(Web3.HTTPProvider(self.provider_url))
@@ -92,28 +102,39 @@ class CanteenScheduler:
         logger.info("✓ Scheduler initialized")
     
     async def register_node(self):
-        """Register this node with the smart contract."""
+        """Register this node with the smart contract with encrypted memory."""
         host_id = self.cluster.get_host()
         logger.info(f"Registering node with contract: {host_id}")
+        logger.info(f"Available memory: {self.memory_mb / 1024:.1f} GB ({self.memory_mb} MB)")
         
         try:
-            # Call addMember function
-            tx_hash = self.contract.functions.addMember(host_id).transact({
+            # Encrypt memory using FHE
+            logger.info("Encrypting memory with FHE...")
+            encrypted_memory = self.fhe_helper.encrypt_memory(self.memory_mb)
+            encrypted_hex = self.fhe_helper.format_for_contract(encrypted_memory)
+            logger.info(f"✓ Memory encrypted (ciphertext size: {len(encrypted_hex)} bytes)")
+            
+            # Call addMember function with encrypted memory
+            # Contract will use this encrypted memory to decide which node gets containers
+            tx_hash = self.contract.functions.addMember(
+                host_id, 
+                encrypted_hex
+            ).transact({
                 'from': self.account,
-                'gas': 300000
+                'gas': 5000000  # Increased for large encrypted data
             })
             
             # Wait for transaction receipt
             receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
             
             if receipt.status == 1:
-                logger.info(f"✓ Node registered successfully (tx: {tx_hash.hex()[:10]}...)")
+                logger.info(f"✓ Node registered with encrypted memory (tx: {tx_hash.hex()[:10]}...)")
             else:
                 logger.error(f"Transaction failed: {receipt}")
         except Exception as e:
             error_msg = str(e)
             if "revert" in error_msg.lower():
-                logger.info("Node seems to have existed previously. Continuing...")
+                logger.info("Node already registered. Continuing...")
             else:
                 logger.error(f"Failed to register node: {e}")
                 raise
@@ -226,6 +247,9 @@ class CanteenScheduler:
             logger.info(f"  Image: {image_name}")
             logger.info(f"  Port: {port}")
             
+            # Update memory: reduce by 200 MB (0.2 GB) and update in contract
+            await self.reduce_and_update_memory(200)
+            
         except Exception as e:
             logger.error(f"Failed to update container: {e}")
             raise
@@ -252,6 +276,47 @@ class CanteenScheduler:
             logger.info("✓ Container cleaned up")
         else:
             logger.info("No container to clean up")
+    
+    async def reduce_and_update_memory(self, amount_mb: int):
+        """Reduce available memory after container deployment and update contract.
+        
+        Args:
+            amount_mb: Amount of memory to reduce (e.g., 200 MB for 0.2 GB)
+        """
+        host_id = self.cluster.get_host()
+        logger.info(f"Updating memory after deployment (reducing by {amount_mb} MB)...")
+        
+        try:
+            # Reduce current memory
+            self.memory_mb -= amount_mb
+            if self.memory_mb < 0:
+                self.memory_mb = 0
+            
+            logger.info(f"New available memory: {self.memory_mb / 1024:.1f} GB ({self.memory_mb} MB)")
+            
+            # Encrypt new memory value
+            encrypted_memory = self.fhe_helper.encrypt_memory(self.memory_mb)
+            encrypted_hex = self.fhe_helper.format_for_contract(encrypted_memory)
+            
+            # Update contract with new encrypted memory
+            tx_hash = self.contract.functions.updateMemberMemory(
+                host_id,
+                encrypted_hex
+            ).transact({
+                'from': self.account,
+                'gas': 5000000  # Increased for large encrypted data
+            })
+            
+            receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
+            
+            if receipt.status == 1:
+                logger.info(f"✓ Memory updated in contract (tx: {tx_hash.hex()[:10]}...)")
+            else:
+                logger.error(f"Failed to update memory: {receipt}")
+        
+        except Exception as e:
+            logger.error(f"Error updating memory: {e}")
+            # Don't raise - container is already running
     
     async def unregister_node(self):
         """Unregister this node from the smart contract."""
