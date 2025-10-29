@@ -40,9 +40,9 @@ class CanteenScheduler:
         self.docker_client = None
         self.fhe_helper = None  # FHE helper for encryption
         
-        # Container state
-        self.current_container = None
-        self.current_image = None
+        # Container state - track by unique key (image_name:index)
+        self.current_containers = {}  # Dict[container_key, container_object]
+        self.current_image = None  # Kept for backward compatibility
     
     def _is_port_available(self, port: int) -> bool:
         """Check if a port is available for binding.
@@ -240,7 +240,7 @@ class CanteenScheduler:
             return []
     
     async def poll_loop(self, interval: float):
-        """Poll contract for image assignment and manage containers.
+        """Poll contract for image assignments and manage multiple containers.
         
         Args:
             interval: Polling interval in seconds
@@ -249,31 +249,48 @@ class CanteenScheduler:
         
         while True:
             try:
-                # Query contract for assigned image
-                details = self.contract.functions.getMemberDetails(host_id).call()
-                scheduled_image = details[0]  # imageName from Member struct
+                # Query contract for all assigned images (supports multiple containers)
+                assigned_images = self.contract.functions.getMemberImages(host_id).call()
                 
-                # Check if image assignment changed
-                if scheduled_image != self.current_image:
-                    logger.info(f"Image assignment changed: '{self.current_image}' -> '{scheduled_image}'")
-                    
-                    if scheduled_image:
-                        await self.update_container(scheduled_image)
-                    else:
-                        await self.cleanup_container()
+                # Build list of container keys with indices (e.g., "nginx:latest:0", "nginx:latest:1")
+                assigned_keys = []
+                for idx, image in enumerate(assigned_images):
+                    container_key = f"{image}:{idx}"
+                    assigned_keys.append(container_key)
+                
+                # Convert to sets for comparison
+                assigned_set = set(assigned_keys)
+                current_set = set(self.current_containers.keys())
+                
+                # Find containers to add and remove
+                to_add = assigned_set - current_set
+                to_remove = current_set - assigned_set
+                
+                # Remove containers that are no longer assigned
+                for container_key in to_remove:
+                    logger.info(f"Removing container: {container_key}")
+                    await self.remove_container(container_key)
+                
+                # Add new containers
+                for container_key in to_add:
+                    # Extract image name from key (e.g., "nginx:latest:0" -> "nginx:latest")
+                    image_name = ":".join(container_key.split(":")[:-1])
+                    logger.info(f"Adding new container: {image_name} (key: {container_key})")
+                    await self.deploy_container(container_key, image_name)
                 
             except Exception as e:
                 logger.error(f"Error in poll loop: {e}")
             
             await trio.sleep(interval)
     
-    async def update_container(self, image_name: str):
-        """Pull and run a Docker container.
+    async def deploy_container(self, container_key: str, image_name: str):
+        """Pull and run a Docker container (supports multiple containers).
         
         Args:
+            container_key: Unique container identifier (e.g., "nginx:latest:0")
             image_name: Docker image name (e.g., 'nginx:latest')
         """
-        logger.info(f"Updating container to image: {image_name}")
+        logger.info(f"Deploying container: {image_name} ({container_key})")
         
         try:
             # Run Docker operations in thread pool (they're blocking)
@@ -283,11 +300,6 @@ class CanteenScheduler:
                 lambda: self.docker_client.images.pull(image_name)
             )
             logger.info(f"✓ Image pulled: {image_name}")
-            
-            # Stop and remove old container
-            if self.current_container:
-                logger.info("Stopping old container...")
-                await trio.to_thread.run_sync(self._stop_container)
             
             # Determine container's internal port and find available host port
             # Common container ports: nginx uses 80, hello-world doesn't expose ports
@@ -328,10 +340,12 @@ class CanteenScheduler:
                 )
                 port = None
             
-            self.current_container = container
-            self.current_image = image_name
+            # Store container in our dictionary using unique key (supports multiple containers)
+            self.current_containers[container_key] = container
+            self.current_image = image_name  # Update for backward compatibility
             
             logger.info(f"✓ Container started: {container.id[:12]}")
+            logger.info(f"  Container Key: {container_key}")
             logger.info(f"  Image: {image_name}")
             if port:
                 logger.info(f"  Host Port: {port} -> Container Port: {container_port}")
@@ -340,8 +354,45 @@ class CanteenScheduler:
             await self.reduce_and_update_memory(200)
             
         except Exception as e:
-            logger.error(f"Failed to update container: {e}")
+            logger.error(f"Failed to deploy container: {e}")
             raise
+    
+    async def remove_container(self, container_key: str):
+        """Remove a specific container by container key.
+        
+        Args:
+            container_key: Unique container identifier (e.g., "nginx:latest:0")
+        """
+        if container_key not in self.current_containers:
+            logger.warning(f"Container {container_key} not found in current containers")
+            return
+        
+        try:
+            container = self.current_containers[container_key]
+            logger.info(f"Stopping container {container_key} ({container.id[:12]})...")
+            
+            await trio.to_thread.run_sync(
+                lambda: self._stop_single_container(container)
+            )
+            
+            del self.current_containers[container_key]
+            logger.info(f"✓ Container {container_key} removed")
+            
+        except Exception as e:
+            logger.error(f"Error removing container {container_key}: {e}")
+    
+    def _stop_single_container(self, container):
+        """Stop a single container (blocking operation).
+        
+        Args:
+            container: Docker container object
+        """
+        try:
+            container.stop(timeout=10)
+            container.remove()
+            logger.info(f"✓ Container stopped and removed: {container.id[:12]}")
+        except Exception as e:
+            logger.warning(f"Error stopping container {container.id[:12]}: {e}")
     
     def _stop_container(self):
         """Stop current container (blocking operation)."""
@@ -354,17 +405,16 @@ class CanteenScheduler:
                 logger.warning(f"Error stopping container: {e}")
     
     async def cleanup_container(self):
-        """Clean up current container."""
-        logger.info("Cleaning up container...")
+        """Clean up all containers."""
+        logger.info("Cleaning up all containers...")
         
-        if self.current_container:
-            await trio.to_thread.run_sync(self._stop_container)
+        if self.current_containers:
+            for container_key in list(self.current_containers.keys()):
+                await self.remove_container(container_key)
             
-            self.current_container = None
-            self.current_image = None
-            logger.info("✓ Container cleaned up")
+            logger.info("✓ All containers cleaned up")
         else:
-            logger.info("No container to clean up")
+            logger.info("No containers to clean up")
     
     async def reduce_and_update_memory(self, amount_mb: int):
         """Reduce available memory after container deployment and update contract.
@@ -434,7 +484,7 @@ class CanteenScheduler:
                 
                 tx_hash = self.contract.functions.removeMember(host_id).transact({
                     'from': self.account,
-                    'gas': 3000000
+                    'gas': 6000000  # Optimized contract
                 })
                 receipt = self.w3.eth.wait_for_transaction_receipt(tx_hash)
                 return tx_hash, receipt

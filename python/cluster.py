@@ -122,7 +122,7 @@ class CanteenCluster:
                     request.replicas
                 ).transact({
                     'from': self.scheduler.account,
-                    'gas': 500000
+                    'gas': 6000000  # Optimized contract with mappings
                 })
             )
             
@@ -161,7 +161,7 @@ class CanteenCluster:
                     request.image
                 ).transact({
                     'from': self.scheduler.account,
-                    'gas': 500000
+                    'gas': 6000000  # Optimized contract
                 })
             )
             

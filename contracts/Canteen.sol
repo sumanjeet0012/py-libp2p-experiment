@@ -4,10 +4,11 @@
     /**
      * @title Canteen
      * @dev Container orchestration with FHE encrypted memory management
+     * Supports multiple containers per node
      */
     contract Canteen {
         struct Member {
-            string imageName;
+            string imageName;  // Kept for backward compatibility, stores last assigned image
             bytes encryptedMemory;  // FHE encrypted memory value
             bool active;
         }
@@ -24,9 +25,22 @@
         event MemberLeave(string host);
         event MemberImageUpdate(string host, string image);
         event MemberMemoryUpdate(string host, bytes newEncryptedMemory);
+        event ContainerAssigned(string host, string image, uint containerId);
+        event ContainerRemoved(string host, string image, uint containerId);
+        event DeploymentQueued(string image, uint remaining);
+        event DeploymentCompleted(string image);
 
         mapping(bytes32 => Member) memberDetails;
         string[] public members;
+
+        // Track container count per member (more gas efficient than arrays)
+        mapping(bytes32 => uint) public memberContainerCount;
+        
+        // Track container assignments: memberContainers[hostHash][containerId] = imageName
+        mapping(bytes32 => mapping(uint => string)) public memberContainers;
+
+        // Deployment queue: tracks pending container deployments
+        mapping(bytes32 => uint) public pendingDeployments;  // imageName -> count of pending deployments
 
         mapping(bytes32 => Image) imageDetails;
         string[] public images;
@@ -77,6 +91,24 @@
 
             memberDetails[hashedHost].encryptedMemory = newEncryptedMemory;
             emit MemberMemoryUpdate(host, newEncryptedMemory);
+            
+            // After memory update, check if there are pending deployments and deploy next
+            deployNextPendingContainer();
+        }
+        
+        /**
+         * @dev Deploy next pending container from any image's queue
+         */
+        function deployNextPendingContainer() private {
+            // Check all images for pending deployments
+            for (uint i = 0; i < images.length; i++) {
+                bytes32 hashedImage = keccak256(abi.encodePacked(images[i]));
+                
+                if (pendingDeployments[hashedImage] > 0 && imageDetails[hashedImage].active) {
+                    deployNextContainer(images[i]);
+                    return;  // Deploy one at a time
+                }
+            }
         }
 
         /**
@@ -115,10 +147,13 @@
             images.push(name);
             imageDetails[hashedName] = Image(replicas, 0, true);
 
-            // Need to rebalance
-            // Eg. (A, 4) is one image. We have 4 members. Now we add (B, 4)
-            // We now have A A A A -> We would need A B A B
-            rebalanceWithUnfortunateImage(name);
+            // Queue all replicas for sequential deployment
+            pendingDeployments[hashedName] = replicas;
+            
+            emit DeploymentQueued(name, replicas);
+            
+            // Deploy first container immediately
+            deployNextContainer(name);
         }
 
         function removeImage(string memory name) restricted public {
@@ -150,17 +185,131 @@
             return (details.imageName, details.active, details.encryptedMemory);
         }
 
+        /**
+         * @dev Get all images assigned to a member (supports multiple containers per node)
+         * @param host The host identifier
+         * @return Array of image names assigned to this host
+         */
+        function getMemberImages(string memory host) public view returns (string[] memory) {
+            bytes32 hashedHost = keccak256(abi.encodePacked(host));
+            uint count = memberContainerCount[hashedHost];
+            string[] memory images_list = new string[](count);
+            
+            for (uint i = 0; i < count; i++) {
+                images_list[i] = memberContainers[hashedHost][i];
+            }
+            
+            return images_list;
+        }
+
+        /**
+         * @dev Get all hosts running a specific image
+         * @param imageName The image name
+         * @return Array of host identifiers running this image
+         */
+        function getImageHosts(string memory imageName) public view returns (string[] memory) {
+            // Iterate through members and find those running this image
+            bytes32 hashedImage = keccak256(abi.encodePacked(imageName));
+            uint matchCount = 0;
+            
+            // First pass: count matches
+            for (uint i = 0; i < members.length; i++) {
+                bytes32 hashedMember = keccak256(abi.encodePacked(members[i]));
+                uint containerCount = memberContainerCount[hashedMember];
+                
+                for (uint j = 0; j < containerCount; j++) {
+                    if (keccak256(abi.encodePacked(memberContainers[hashedMember][j])) == hashedImage) {
+                        matchCount++;
+                        break;  // Count each member only once
+                    }
+                }
+            }
+            
+            // Second pass: collect matches
+            string[] memory hosts = new string[](matchCount);
+            uint currentIndex = 0;
+            
+            for (uint i = 0; i < members.length; i++) {
+                bytes32 hashedMember = keccak256(abi.encodePacked(members[i]));
+                uint containerCount = memberContainerCount[hashedMember];
+                
+                for (uint j = 0; j < containerCount; j++) {
+                    if (keccak256(abi.encodePacked(memberContainers[hashedMember][j])) == hashedImage) {
+                        hosts[currentIndex] = members[i];
+                        currentIndex++;
+                        break;  // Count each member only once
+                    }
+                }
+            }
+            
+            return hosts;
+        }
+
         function getImageDetails(string memory name) public view returns (uint, uint, bool) {
             Image storage details = imageDetails[keccak256(abi.encodePacked(name))];
             return (details.replicas, details.deployed, details.active);
+        }
+        
+        /**
+         * @dev Deploy next container from the queue for specified image
+         * @param imageName The image to deploy
+         */
+        function deployNextContainer(string memory imageName) private {
+            bytes32 hashedImage = keccak256(abi.encodePacked(imageName));
+            
+            // Check if there are pending deployments
+            if (pendingDeployments[hashedImage] == 0) {
+                return;
+            }
+            
+            Image storage image = imageDetails[hashedImage];
+            
+            // Check if we've reached the target
+            if (image.deployed >= image.replicas) {
+                pendingDeployments[hashedImage] = 0;
+                emit DeploymentCompleted(imageName);
+                return;
+            }
+            
+            // Find node with highest memory and lowest container count
+            string memory bestHost = findNodeWithHighestMemory(imageName);
+            
+            if (keccak256(abi.encodePacked(bestHost)) == keccak256(abi.encodePacked(""))) {
+                // No available node found - keep in queue
+                emit DeploymentQueued(imageName, pendingDeployments[hashedImage]);
+                return;
+            }
+            
+            bytes32 hashedBestHost = keccak256(abi.encodePacked(bestHost));
+            
+            // Add this image to the member's container list
+            uint containerIndex = memberContainerCount[hashedBestHost];
+            memberContainers[hashedBestHost][containerIndex] = imageName;
+            memberContainerCount[hashedBestHost]++;
+            
+            // Update the last assigned image (for backward compatibility)
+            memberDetails[hashedBestHost].imageName = imageName;
+            
+            image.deployed += 1;
+            pendingDeployments[hashedImage] -= 1;
+            
+            emit MemberImageUpdate(bestHost, imageName);
+            emit ContainerAssigned(bestHost, imageName, containerIndex);
+            
+            if (pendingDeployments[hashedImage] > 0) {
+                emit DeploymentQueued(imageName, pendingDeployments[hashedImage]);
+            } else {
+                emit DeploymentCompleted(imageName);
+            }
         }
 
         function rebalanceWithUnfortunateImage(string memory newImageName) private {
             Image storage newImage = imageDetails[keccak256(abi.encodePacked(newImageName))];
             
-            // Deploy replicas one by one, each time selecting node with highest memory
+            // Deploy replicas one by one, selecting node with highest available memory each time
+            // Supports multiple replicas per node - will round-robin across nodes
             while (newImage.deployed < newImage.replicas) {
-                // Find node with highest memory that doesn't have an image
+                // Find node with highest memory (can now reuse nodes for multiple containers)
                 string memory bestHost = findNodeWithHighestMemory("");
                 
                 if (keccak256(abi.encodePacked(bestHost)) == keccak256(abi.encodePacked(""))) {
@@ -168,11 +317,20 @@
                     break;
                 }
                 
-                // Assign image to the node with highest memory
                 bytes32 hashedBestHost = keccak256(abi.encodePacked(bestHost));
+                
+                // Add this image to the member's container list (more gas efficient than arrays)
+                uint containerIndex = memberContainerCount[hashedBestHost];
+                memberContainers[hashedBestHost][containerIndex] = newImageName;
+                memberContainerCount[hashedBestHost]++;
+                
+                // Update the last assigned image (for backward compatibility)
                 memberDetails[hashedBestHost].imageName = newImageName;
+                
                 newImage.deployed += 1;
+                
                 emit MemberImageUpdate(bestHost, newImageName);
+                emit ContainerAssigned(bestHost, newImageName, containerIndex);
             }
         }
 
@@ -205,19 +363,22 @@
         /**
          * @dev Find node with highest encrypted memory for image deployment.
          * Uses FHE comparison to select optimal node without decrypting memory values.
-         * @return The host with highest encrypted memory
+         * Considers container count to balance load across nodes.
+         * @return The host with highest encrypted memory and lowest container count
          */
         function findNodeWithHighestMemory(string memory) private view returns (string memory) {
             string memory bestHost = "";
             bytes memory highestMemory = "";
+            uint lowestContainerCount = type(uint).max;
             
             // Iterate through all members to find the one with highest encrypted memory
+            // and lowest container count (for load balancing)
             for (uint i = 0; i < members.length; i++) {
                 bytes32 hashedMember = keccak256(abi.encodePacked(members[i]));
                 Member storage member = memberDetails[hashedMember];
                 
-                // Skip if not active or already has an image assigned
-                if (!member.active || keccak256(abi.encodePacked(member.imageName)) != keccak256(abi.encodePacked(""))) {
+                // Skip if not active
+                if (!member.active) {
                     continue;
                 }
                 
@@ -226,21 +387,32 @@
                     continue;
                 }
                 
+                uint containerCount = memberContainerCount[hashedMember];
+                
                 // First valid member becomes initial candidate
                 if (highestMemory.length == 0) {
                     bestHost = members[i];
                     highestMemory = member.encryptedMemory;
+                    lowestContainerCount = containerCount;
                     continue;
                 }
                 
-                // FHE Comparison: Compare encrypted memory values
-                // In production, this would use actual FHE comparison operations
-                // For now, we use a simple comparison as placeholder
-                // TODO: Integrate with Zama fhEVM for on-chain FHE operations
-                if (compareEncryptedMemory(member.encryptedMemory, highestMemory)) {
+                // Prefer nodes with fewer containers for better distribution
+                // Only compare memory if container counts are equal
+                if (containerCount < lowestContainerCount) {
+                    // This node has fewer containers, prefer it
                     bestHost = members[i];
                     highestMemory = member.encryptedMemory;
+                    lowestContainerCount = containerCount;
+                } else if (containerCount == lowestContainerCount) {
+                    // Same container count, use FHE memory comparison
+                    if (compareEncryptedMemory(member.encryptedMemory, highestMemory)) {
+                        bestHost = members[i];
+                        highestMemory = member.encryptedMemory;
+                        lowestContainerCount = containerCount;
+                    }
                 }
+                // If this node has more containers, skip it
             }
             
             return bestHost;
