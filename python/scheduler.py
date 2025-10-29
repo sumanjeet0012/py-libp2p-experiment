@@ -1,6 +1,7 @@
 """Scheduler for polling smart contract and managing Docker containers."""
 import logging
 import json
+import socket
 from typing import Optional
 from web3 import Web3
 import docker
@@ -42,6 +43,43 @@ class CanteenScheduler:
         # Container state
         self.current_container = None
         self.current_image = None
+    
+    def _is_port_available(self, port: int) -> bool:
+        """Check if a port is available for binding.
+        
+        Args:
+            port: Port number to check
+            
+        Returns:
+            True if port is available, False otherwise
+        """
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(('0.0.0.0', port))
+                return True
+        except OSError:
+            return False
+    
+    def _find_available_port(self, start_port: int = 8080, max_attempts: int = 100) -> int:
+        """Find an available port starting from start_port.
+        
+        Args:
+            start_port: Port to start searching from
+            max_attempts: Maximum number of ports to try
+            
+        Returns:
+            Available port number
+            
+        Raises:
+            RuntimeError: If no available port found
+        """
+        for offset in range(max_attempts):
+            port = start_port + offset
+            if self._is_port_available(port):
+                return port
+        
+        raise RuntimeError(f"No available port found in range {start_port}-{start_port + max_attempts}")
     
     async def initialize(self):
         """Initialize the scheduler components."""
@@ -96,10 +134,38 @@ class CanteenScheduler:
             logger.error(f"Failed to connect to Docker: {e}")
             raise
         
+        # Clean up any exited/crashed containers from previous runs
+        await self._cleanup_exited_containers()
+        
         # Register node with contract
         await self.register_node()
         
         logger.info("✓ Scheduler initialized")
+    
+    async def _cleanup_exited_containers(self):
+        """Clean up any exited or crashed containers to free up ports."""
+        try:
+            exited_containers = await trio.to_thread.run_sync(
+                lambda: self.docker_client.containers.list(
+                    all=True,
+                    filters={'status': 'exited'}
+                )
+            )
+            
+            if exited_containers:
+                logger.info(f"Found {len(exited_containers)} exited containers, cleaning up...")
+                for container in exited_containers:
+                    try:
+                        await trio.to_thread.run_sync(lambda c=container: c.remove())
+                        logger.info(f"  ✓ Removed exited container: {container.id[:12]}")
+                    except Exception as e:
+                        logger.warning(f"  Failed to remove container {container.id[:12]}: {e}")
+                logger.info("✓ Exited containers cleaned up")
+            else:
+                logger.info("✓ No exited containers to clean up")
+                
+        except Exception as e:
+            logger.warning(f"Error cleaning up exited containers: {e}")
     
     async def register_node(self):
         """Register this node with the smart contract with encrypted memory."""
@@ -223,29 +289,52 @@ class CanteenScheduler:
                 logger.info("Stopping old container...")
                 await trio.to_thread.run_sync(self._stop_container)
             
-            # Calculate unique port based on node offset
-            # Node 0 (5000) -> 8080, Node 1 (5001) -> 8081, etc.
-            node_offset = self.node_port - 5000
-            base_port = 8000 if "hello-world" in image_name else 8080
-            port = base_port + node_offset
+            # Determine container's internal port and find available host port
+            # Common container ports: nginx uses 80, hello-world doesn't expose ports
+            container_port = 80  # Default for nginx
+            if "hello-world" in image_name:
+                # hello-world doesn't need port mapping
+                container_port = None
             
-            # Create and start new container
-            logger.info(f"Starting new container (port {port})...")
-            container = await trio.to_thread.run_sync(
-                lambda: self.docker_client.containers.run(
-                    image_name,
-                    detach=True,
-                    ports={f'{base_port}/tcp': port},  # Map container's base_port to host's unique port
-                    remove=False
+            # Find an available host port dynamically
+            if container_port:
+                # Start search from base port + node offset for better distribution
+                node_offset = self.node_port - 5000
+                start_port = 8080 + node_offset
+                port = await trio.to_thread.run_sync(
+                    lambda: self._find_available_port(start_port)
                 )
-            )
+                logger.info(f"Found available port: {port}")
+                
+                # Create and start new container with port mapping
+                logger.info(f"Starting container {image_name} on port {port}...")
+                container = await trio.to_thread.run_sync(
+                    lambda: self.docker_client.containers.run(
+                        image_name,
+                        detach=True,
+                        ports={f'{container_port}/tcp': port},
+                        remove=False
+                    )
+                )
+            else:
+                # No port mapping needed
+                logger.info(f"Starting container {image_name} (no port mapping)...")
+                container = await trio.to_thread.run_sync(
+                    lambda: self.docker_client.containers.run(
+                        image_name,
+                        detach=True,
+                        remove=False
+                    )
+                )
+                port = None
             
             self.current_container = container
             self.current_image = image_name
             
             logger.info(f"✓ Container started: {container.id[:12]}")
             logger.info(f"  Image: {image_name}")
-            logger.info(f"  Port: {port}")
+            if port:
+                logger.info(f"  Host Port: {port} -> Container Port: {container_port}")
             
             # Update memory: reduce by 200 MB (0.2 GB) and update in contract
             await self.reduce_and_update_memory(200)
