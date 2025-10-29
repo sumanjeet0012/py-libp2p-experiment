@@ -122,20 +122,56 @@
             bytes32 hashedHost = keccak256(abi.encodePacked(host));
             require(memberDetails[hashedHost].active);
 
-            string memory affectedImage = memberDetails[hashedHost].imageName;
-
-            if (keccak256(abi.encodePacked(affectedImage)) != keccak256(abi.encodePacked(""))) {
-                imageDetails[keccak256(abi.encodePacked(affectedImage))].deployed -= 1;
-                
-                // Need to rebalance
-                // Eg. (A, 4), (B, 4) are two images. We have 4 members, and we remove 2
-                // We now have A A null null -> We would need A B null null
-                rebalanceWithUnfortunateImage(affectedImage);
+            // Track all unique images that were on this node for redeployment
+            string[] memory affectedImages = new string[](memberContainerCount[hashedHost]);
+            uint uniqueImageCount = 0;
+            
+            // Clean up all containers assigned to this member
+            uint containerCount = memberContainerCount[hashedHost];
+            for (uint i = 0; i < containerCount; i++) {
+                string memory containerImage = memberContainers[hashedHost][i];
+                if (bytes(containerImage).length > 0) {
+                    bytes32 hashedImage = keccak256(abi.encodePacked(containerImage));
+                    
+                    // Decrement deployed count for this image
+                    if (imageDetails[hashedImage].deployed > 0) {
+                        imageDetails[hashedImage].deployed -= 1;
+                    }
+                    
+                    // Add to pending deployments queue for redeployment
+                    pendingDeployments[hashedImage] += 1;
+                    
+                    // Track unique images
+                    bool alreadyTracked = false;
+                    for (uint j = 0; j < uniqueImageCount; j++) {
+                        if (keccak256(abi.encodePacked(affectedImages[j])) == hashedImage) {
+                            alreadyTracked = true;
+                            break;
+                        }
+                    }
+                    if (!alreadyTracked) {
+                        affectedImages[uniqueImageCount] = containerImage;
+                        uniqueImageCount++;
+                    }
+                    
+                    // Clear the container slot
+                    delete memberContainers[hashedHost][i];
+                }
             }
             
+            // Reset container count
+            memberContainerCount[hashedHost] = 0;
+            
+            // Mark member as inactive
             memberDetails[hashedHost] = Member("", "", false);
 
             emit MemberLeave(host);
+            
+            // Trigger redeployment of affected containers on remaining nodes
+            for (uint i = 0; i < uniqueImageCount; i++) {
+                emit DeploymentQueued(affectedImages[i], pendingDeployments[keccak256(abi.encodePacked(affectedImages[i]))]);
+                deployNextContainer(affectedImages[i]);
+            }
         }
 
         function addImage(string memory name, uint replicas) restricted public {
